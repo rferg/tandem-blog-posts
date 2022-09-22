@@ -50,9 +50,9 @@ TODO
 
 ## Domain events
 
-A [domain event](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation) is something that happened within an application domain (e.g., "post created") that we want other areas of the application to react to and perform some side effect.  This is a pattern associated with Domain-Driven Design, but it is still useful even if we are not strictly adhering to DDD.  The idea is to make these events and side effects explicit by creating event and event handler classes, e.g., `PostCreated` and `PostCreatedHandler`.  After the event occurs, the event class is instantiated and dispatched to something (e.g., a mediator) that can find the appropriate handler and pass the event to it.  The handler then carries out the desired side effect, decoupled from the code that originally created the event.  Note that all of this usually happens synchronously and within the same process and transaction, so that if any part of it fails, everything can be rolled back.
+A [domain event](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation) is something that happened within an application domain (e.g., "post created") that we want other areas of the application to act upon, performing some side effect.  This is a pattern associated with Domain-Driven Design, but it is still useful even if we are not strictly adhering to DDD.  The idea is to make these events and side effects explicit by creating event and event handler classes, e.g., `PostCreated` and `PostCreatedHandler`.  After the event occurs, the event class is instantiated and dispatched to something (e.g., a mediator) that can find the appropriate handler and pass the event to it.  The handler then carries out the desired side effect, decoupled from the code that originally created the event.  All of this usually happens synchronously and within the same process and transaction, so that if any part of it fails, everything can be rolled back.
 
-This is in contrast to what is typically called an [integration event](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation#domain-events-versus-integration-events), where the handler runs asynchronously after the original database transaction was committed; these are often transmitted over a message bus or queue to another process or completely separate application.
+This is in contrast to what is typically called an [integration event](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation#domain-events-versus-integration-events), where the handler runs asynchronously after the original database transaction was committed.  Integration events are often transmitted over some kind of message broker to another process or application.
 
 ### An example
 
@@ -83,13 +83,13 @@ class Tag < ApplicationRecord
 end
 ```
 
-This, however, has a number of drawbacks.  We've added some additional responsibilities to our `Tag` model.  It is now responsible for generating the content of a notification when a post is tagged (`"Posted: '#{post.title}"`) and for creating `Notification` records with the correct attributes.  These responsibilities seem orthogonal to modelling a post tag; our `Tag` class is now more complex, harder to test, and harder to change.  This could be improved by encapsulating that logic within its own class or within the `Notification` model, so that, say, `apply_to` only has to call `Notification.post_tagged(post, tag)` after it creates the `PostTag` record.  However, this does not help with two other issues.
+This, however, has a number of drawbacks.  We've added some additional responsibilities to our `Tag` model.  It is now responsible for generating the content of a notification when a post is tagged (`"Posted: '#{post.title}"`) and for creating `Notification` records with the correct attributes.  These responsibilities seem orthogonal to the model's intended purpose of representing a post tag.  Our `Tag` class is now more complex, harder to test, and harder to change.  This could be improved by encapsulating that logic within its own class or within the `Notification` model, so that, say, `apply_to` only has to call `Notification.post_tagged(post, tag)` after it creates the `PostTag` record.  However, this does not help with two other issues.
 
 First, it's not obvious from looking at the `apply_to` method what is the main operation and what are the side effects, if any.  Is creating these `Notification` records essential to the operation of a `Tag` or `PostTag` as dictated by some business rule?  Or is it just in service of supporting some other part of the application?  It's difficult to tell by only looking at this method without context.
 
-Second, this method directly couples two parts of our application that have distinct responsibilities (post and tags vs. notifications).  Now, when testing the `Tag` model, we have to consider this call to method(s) on `Notification` and verify it.  We might have to mock it if, say, `Notification.post_tagged` does things that we don't want running in our tests (e.g., make a network call to a third-party service).  Also, since `Tag` depends on `Notification`, if `Notification` changes, we might have to change `Tag` as well.
+Second, this method directly couples two parts of our application that have distinct responsibilities (post and tags vs. notifications).  Now, when testing the `Tag` model, we have to consider this call to method(s) on `Notification` and verify it.  We might have to mock it if, for example, `Notification.post_tagged` does things that we don't want running in our tests (e.g., make a network call to a third-party service).  Also, since `Tag` depends on `Notification`, if `Notification` changes, we might have to make changes to `Tag#apply_to` as well.
 
-[TODO: PUT PRE-MEDIATOR DIAGRAM HERE]
+![Tag is coupled to a model in a different part of the application](images/events-without-mediator.png)
 
 ### Implementing domain events in Rails with a mediator
 
@@ -99,7 +99,7 @@ Domain events can solve these issues by putting the notification logic in an eve
 class Tag < ApplicationRecord
 # ...
   def apply_to(post)
-    add_domain_event(PostTagged.new(post, tag))
+    add_domain_event(Events::PostTagged.new(post, tag))
     post_tags.create(post:)
   end
 end
@@ -107,7 +107,7 @@ end
 
 [TODO: PUT POST-MEDIATOR DIAGRAM HERE]
 
-How does this work?  The basic idea is that `add_domain_event` will be a method on the base class `ApplicationRecord`.  It adds events to an internal array, which will be exposed via public method `domain_events`.  Then we'll add an `after_save` callback on `ApplicationRecord` that gets these events and publishes them to the mediator, which will in turn send them to the appropriate handlers.  These will be published as `Mediate::Notification`s, which, if you'll recall, can have multiple handlers and do not return a response to the caller.  We choose the `after_save` callback (instead of `after_commit`) because we want any additional database writes made by the event handlers to be part of the same transaction as the originating operation.
+How does this work?  We will want all of our models to have the ability to dispatch domain events.  So we'll have `add_domain_event` as a method on the base class `ApplicationRecord`.  This method adds events to an internal array, which will be exposed via another public method `domain_events`.  Then we'll add an `after_save` callback on `ApplicationRecord` that gets these `domain_events` and publishes them to the mediator, which will in turn send them to the appropriate handlers.  Domain events will be published as `Mediate::Notification`s, which can have multiple handlers.  We choose the `after_save` callback (instead of `after_commit`) because we want any additional database writes made by the event handlers to be part of the same transaction as the originating operation.
 
 That's the overview, now let's look at the details.  First, we'll create a base class for events that inherits from `Mediate::Notification` and has a `published` attribute.
 
@@ -164,7 +164,7 @@ end
 
 With each loop in the `after_save` method, we get the first unpublished event on the model, set `published` to `true`, and publish it to the mediator.  We break out of the loop when there are no more published events.  We do this one event at a time and re-evaluate `model.domain_events` on each loop because it's possible that one of the event handlers added more events to the model in question.  Iterating over the events once and publishing each of them would miss those events.
 
-That completes our `ApplicationRecord` setup.  Now, any model is capable of publishing events.  All that's left now is to define our `PostTagged` event and the handler for it.  `PostTagged` is simple enough; it inherits from `ApplicationEvent` and has attributes for a `Post` and a `Tag` whose values are passed through the constructor.
+That completes our `ApplicationRecord` setup.  Now, any model is capable of publishing events.  All that remains is to define our `PostTagged` event and the handler for it.  `PostTagged` is simple enough; it inherits from `ApplicationEvent` and has attributes for a `Post` and a `Tag` whose values are passed through the constructor.
 
 ```ruby
 module Events
@@ -195,7 +195,7 @@ class PostTaggedHandler < Mediate::NotificationHandler
 end
 ```
 
-And that's it!  We've removed the direct dependency on `Notification` from `Tag` and made this side effect explicit instead of buried somewhere in the `apply_to` method.  We can now change the behavior of this event side effect without touching the `Tag` class.  Additionally, if we wanted more things to happen when `PostTagged` fires, we can easily add more handlers for this event, since events are `Mediate::Notification`s.  Another nice effect of this decoupling is that We can also test `Tag` and `PostTaggedHandler` in isolation, making our tests more focused and easier to maintain.
+And that's it!  We've removed the direct dependency on `Notification` from `Tag` and made this side effect explicit.  We can now change the behavior of this event side effect without touching the `Tag` class.  Additionally, if we wanted more things to happen when `PostTagged` fires, we can easily add more handlers for this event, since events are `Mediate::Notification`s, which can have multiple handlers.  Another nice effect of this decoupling is that We can also test `Tag` and `PostTaggedHandler` in isolation, making our tests more focused and easier to maintain.
 
 ## Crosscutting concerns
 
