@@ -1,52 +1,6 @@
-# Using a Mediator in Rails to Manage Complexity
+# Rails on Mediator Part 2: Domain Events
 
 TODO: INTRO
-
-## Mediator pattern
-
-TODO
-
-### Mediator as "message bus"
-
-TODO
-
-```ruby
-class MyRequest < Mediate::Request
-  attr_reader :message
-
-  def initialize(message)
-    @message = message
-    super()
-  end
-end
-```
-
-```ruby
-class MyRequestHandler < Mediate::RequestHandler
-  handles MyRequest
-
-  def handle(request)
-    "Received: #{request.message}"
-  end
-end
-```
-
-```ruby
-class MyRequest < Mediate::Request
-  # same as above...
-  handle_with ->(request) { "Received: #{request.message}" }
-end
-```
-
-```ruby
-request = MyRequest.new('hello')
-response = Mediate.dispatch(request)
-puts response # 'Received: hello'
-```
-
-## Thin, Decoupled Controllers
-
-TODO
 
 ## Domain Events
 
@@ -54,7 +8,7 @@ A [domain event](https://learn.microsoft.com/en-us/dotnet/architecture/microserv
 
 This is in contrast to what is typically called an [integration event](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation#domain-events-versus-integration-events), where the handler runs asynchronously after the original database transaction was committed.  Integration events are often transmitted over some kind of message broker to another process or application.
 
-### An Example: Notifying Followers
+## An Example: Notifying Followers
 
 Suppose we have a forum application.  Users can create posts and tag them to indicate what they're about (e.g., #unpasteurized_cheese).  Users can also follow tags that they're interested in.  When a tag is applied to a post, its followers should be notified.
 
@@ -91,7 +45,7 @@ Second, this method directly couples two parts of our application that have dist
 
 ![Tag is coupled to a model in a different part of the application](images/events-without-mediator.png)
 
-### Implementing Domain Events in Rails
+## Implementing Domain Events in Rails with a Mediator
 
 Domain events can solve these issues by putting the notification logic in an event handler that's decoupled from `Tag`.  The `apply_to` method, then, would only be responsible for making sure a `PostTagged` event is dispatched when it creates the `PostTag` record.  It will end up looking like the following.  Note that we've removed any reference to `Notification`.
 
@@ -197,28 +151,4 @@ end
 
 And that's it!  We've removed the direct dependency on `Notification` from `Tag` and made this side effect explicit.  We can now change the behavior of this event side effect without touching the `Tag` class.  Additionally, if we wanted more things to happen when `PostTagged` fires, we can easily add more handlers for this event, since events are `Mediate::Notification`s, which can have multiple handlers.  Another nice effect of this decoupling is that we can also test `Tag` and `PostTaggedHandler` in isolation, making our tests more focused and easier to maintain.
 
-## Cross-cutting concerns
-
-Cross-cutting concerns are parts of an application that are used across feature modules.  Examples include logging, caching, transaction management, and authorization.  Let's consider authorization and see if a mediator can help us improve the standard way that it's handled in Rails.
-
-### An Example: Authorization
-
-We're going to use the [Pundit gem](https://github.com/varvet/pundit) to help us with authorization and we'll consider a single operation: creating a post.  Our rule is that a user can create a post as long as they're not banned.  The policy class will look like this:
-
-```ruby
-class PostPolicy < ApplicationPolicy
-  def create?
-    !user.banned?
-  end
-end
-```
-
-TODO (WIP)
-
-## Trade-offs and Alternatives
-
-TODO
-
-## Conclusion
-
-TODO
+In the [next and final part of this series](../part-3-crosscutting-and-tradeoffs/article.md) we'll look at how using a mediator can help improve implementations of cross-cutting concerns, like logging or authorization.  We'll also consider some of the general tradeoffs of using a mediator to organize Rails applications.
