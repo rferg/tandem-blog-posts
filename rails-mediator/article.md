@@ -105,7 +105,7 @@ class Tag < ApplicationRecord
 end
 ```
 
-[TODO: PUT POST-MEDIATOR DIAGRAM HERE]
+![Tag is no longer coupled to the notifications area because it sends events through the mediator](images/events-with-mediator.png)
 
 How does this work?  We will want all of our models to have the ability to dispatch domain events.  So we'll have `add_domain_event` as a method on the base class `ApplicationRecord`.  This method adds events to an internal array, which will be exposed via another public method `domain_events`.  Then we'll add an `after_save` callback on `ApplicationRecord` that gets these `domain_events` and publishes them to the mediator, which will in turn send them to the appropriate handlers.  Domain events will be published as `Mediate::Notification`s, which can have multiple handlers.  We choose the `after_save` callback (instead of `after_commit`) because we want any additional database writes made by the event handlers to be part of the same transaction as the originating operation.
 
