@@ -1,6 +1,6 @@
 # Rails on Mediator Part 2: Domain Events
 
-TODO: INTRO
+Are you having trouble managing the complexity of your Ruby on Rails application?  Are your models tangled together and difficult to change?  Do your controllers contain a lot of complex logic making them difficult to understand and test?  In this 3-part series, I'll suggest some ways that using a mediator to organize parts of your application could help manage this complexity.  Be sure to read [Part 1](../part-1-intro-and-controllers/article.md) where I introduced the mediator pattern and showed how you can use it to make your controllers thinner.  In this part we'll look at how to use domain events to decouple your models. Stay tuned for [Part 3](../part-3-crosscutting-and-tradeoffs/article.md) to learn how to implement cross-cutting concerns without adding more code to your controllers.
 
 ## Domain Events
 
@@ -61,7 +61,7 @@ end
 
 ![Tag is no longer coupled to the notifications area because it sends events through the mediator](images/events-with-mediator.png)
 
-How does this work?  We will want all of our models to have the ability to dispatch domain events.  So we'll have `add_domain_event` as a method on the base class `ApplicationRecord`.  This method adds events to an internal array, which will be exposed via another public method `domain_events`.  Then we'll add an `after_save` callback on `ApplicationRecord` that gets these `domain_events` and publishes them to the mediator, which will in turn send them to the appropriate handlers.  Domain events will be published as `Mediate::Notification`s, which can have multiple handlers.  We choose the `after_save` callback (instead of `after_commit`) because we want any additional database writes made by the event handlers to be part of the same transaction as the originating operation.
+How does this work?  We will want all of our models to have the ability to dispatch domain events.  So we'll have `add_domain_event` as a method on the base class `ApplicationRecord`.  This method adds events to an internal array, which will be exposed via another public method `domain_events`.  Then we'll add an `after_save` callback on `ApplicationRecord` that gets these `domain_events` and publishes them to the mediator, which will in turn send them to the appropriate handlers.  Domain events will be published as `Mediate::Notification`s.  Recall from [Part 1](../part-1-intro-and-controllers/article.md) that notifications can have multiple handlers and do not return anything to the notification publisher.  We choose the `after_save` callback (instead of `after_commit`) because we want any additional database writes made by the event handlers to be part of the same transaction as the originating operation.
 
 That's the overview, now let's look at the details.  First, we'll create a base class for events that inherits from `Mediate::Notification` and has a `published` attribute.
 
@@ -151,4 +151,4 @@ end
 
 And that's it!  We've removed the direct dependency on `Notification` from `Tag` and made this side effect explicit.  We can now change the behavior of this event side effect without touching the `Tag` class.  Additionally, if we wanted more things to happen when `PostTagged` fires, we can easily add more handlers for this event, since events are `Mediate::Notification`s, which can have multiple handlers.  Another nice effect of this decoupling is that we can also test `Tag` and `PostTaggedHandler` in isolation, making our tests more focused and easier to maintain.
 
-In the [next and final part of this series](../part-3-crosscutting-and-tradeoffs/article.md) we'll look at how using a mediator can help improve implementations of cross-cutting concerns, like logging or authorization.  We'll also consider some of the general tradeoffs of using a mediator to organize Rails applications.
+In the [next and final part of this series](../part-3-crosscutting-and-tradeoffs/article.md) we'll look at how using a mediator can help improve implementations of cross-cutting concerns, like logging or authorization.  We'll also consider some of the general trade-offs of using a mediator to organize Rails applications.
