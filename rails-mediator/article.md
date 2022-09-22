@@ -195,7 +195,7 @@ class PostTaggedHandler < Mediate::NotificationHandler
 end
 ```
 
-And that's it!  We've removed the direct dependency on `Notification` from `Tag` and made this side effect explicit.  We can now change the behavior of this event side effect without touching the `Tag` class.  Additionally, if we wanted more things to happen when `PostTagged` fires, we can easily add more handlers for this event, since events are `Mediate::Notification`s, which can have multiple handlers.  Another nice effect of this decoupling is that We can also test `Tag` and `PostTaggedHandler` in isolation, making our tests more focused and easier to maintain.
+And that's it!  We've removed the direct dependency on `Notification` from `Tag` and made this side effect explicit.  We can now change the behavior of this event side effect without touching the `Tag` class.  Additionally, if we wanted more things to happen when `PostTagged` fires, we can easily add more handlers for this event, since events are `Mediate::Notification`s, which can have multiple handlers.  Another nice effect of this decoupling is that we can also test `Tag` and `PostTaggedHandler` in isolation, making our tests more focused and easier to maintain.
 
 ## Crosscutting concerns
 
