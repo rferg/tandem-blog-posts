@@ -6,7 +6,7 @@ Are you having trouble managing the complexity of your Ruby on Rails application
 
 Cross-cutting concerns are parts of an application that are used across feature modules.  Examples include logging, caching, transaction management, and authorization.  For many of these, adding them to a Rails application involves some combination of including modules or adding methods on controllers or models.  We might even include modules on `ApplicationController` or `ApplicationRecord` or some other base class to make them widely available.  This introduces additional dependencies, can clutter these classes with methods, and can complicate testing.
 
-![Implementing cross-cutting concerns often involves modifying all controllers through the base class](images/conerns-without-mediator.png)
+![Implementing cross-cutting concerns often involves modifying all controllers through the base class](images/concerns-without-mediator.png)
 
 With a mediator, on the other hand, we have a nice way of handling cross-cutting concerns.  Recall from [Part 1](../part-1-intro-and-controllers/article.md) that Mediate allows for [pre- and post-request handler behaviors](https://github.com/rferg/mediate#pre--and-post-request-behaviors).  These are behaviors that we can slot into the request processing pipeline before or after the request handler runs.  Like request handlers, we can register these for a particular request class and these registrations will also apply to any subclasses of that request class.  Therefore we can add behavior that can run on all requests or on a certain broad type of requests.  This allows us cut across feature modules without having to modify any controllers or methods.  Moreover, these behaviors will (or should be) single-responsibility, plain Ruby classes that we can easily test.
 
@@ -145,7 +145,50 @@ class PostsController < ApplicationController
 end
 ```
 
-## Trade-offs and Alternatives
+## Trade-offs
+
+With any design pattern there are trade-offs and using a mediator is no different.
+
+### Indirection Makes Control Flow Harder to Follow
+
+The mediator pattern achieves greater decoupling between application components through indirection (i.e., going through the mediator).  This makes them easier to change and test independently.  But, it also increases the difficulty of following how data and control flow through the application.  One cannot simply trace method calls through the code because the mediator resolves the handler of a request at runtime.
+
+I believe, however, that developers can quickly pick up the basics of how requests and handlers work, especially if they are sensibly named.  Additionally, it's good practice to define request handler classes nested within the request class they handle, like this:
+
+```ruby
+class MyRequest < Mediate::Request
+  # ...
+  class Handler < Mediate::RequestHandler
+    handles MyRequest
+
+    def handle(request)
+      # ...
+    end
+  end
+end
+```
+
+[Among other benefits](https://github.com/rferg/mediate#nest-request-handler-definitions-within-request-classes), this makes it easy to find the handler for a given request, since they will be in the same file.  Nonetheless, this is additional learning overhead associated with using a mediator, so it should be weighed against the benefits of the increased decoupling for your particular application.
+
+### More Boilerplate
+
+Using a mediator encourages writing single-responsibility classes.  This can make your code easier to understand, change, and test.  However, on balance, you probably will have to write more code to do the same thing--at the very least because of the boilerplate of defining the additional classes.  Moreover, when writing a request/notification handler, you have the additional boilerplate of the `handles` call to register it with the mediator.
+
+Mediate's [implicit handler declarations](https://github.com/rferg/mediate#implicit-handler-declaration) help reduce the boilerplate a bit, since simple handlers can be defined with a lambda instead of an additional class.  However, again, the additional code you will have to write is a cost that should be considered for your particular application.
+
+### Mediator is a Singleton
+
+Mediate will use one mediator instance per process to hold all of the handler registrations.  These registrations are effectively global state within your application.  Global state can lead to bad, elusive bugs if its possible mutations are difficult to track or not thread-safe.
+
+I do not believe Mediate suffers from these issues, though.  The handler registrations are encapsulated behind a few possible methods, mainly `handles`, which only adds registrations in an idempotent way.  You can [`reset` the mediator](https://github.com/rferg/mediate#testing), however this only makes sense to do within integration test setup or teardown--it would be obviously wrong in normal application code.  Moreover, Mediate's handler registrations are thread-safe; it stores the handler registrations in [Concurrent Ruby's](https://github.com/ruby-concurrency/concurrent-ruby) [`Concurrent::Map`s](http://ruby-concurrency.github.io/concurrent-ruby/master/Concurrent/Map.html).
+
+### Awkward Integration with Rails Autoloading
+
+By default, in non-production environments, Rails lazy-loads constants, including classes.  Since Mediate handlers are registered within their definitions using `handles`, but are never explicitly referenced elsewhere, Rails doesn't know to load those definitions.  Thus, they will never get registered with the mediator.
+
+This can be solved easily with request handlers [by nesting them within the request classes they handle](https://github.com/rferg/mediate#nest-request-handler-definitions-within-request-classes).  For other types of handlers, like notification handlers, you will have to configure Rails to eager load these (see [here for details](https://github.com/rferg/mediate#configure-rails-to-eager-load-other-handlers-in-non-production-environments)).
+
+## Alternatives
 
 TODO
 
