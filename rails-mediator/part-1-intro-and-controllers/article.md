@@ -4,7 +4,7 @@ Are you having trouble managing the complexity of your Ruby on Rails application
 
 ## The Pattern
 
-The subject of this series is a pattern for organizing certain areas of an application to reduce unnecessary coupling between components, making them easier to change and test.  It also has the benefit of providing easy points of extension for implementing cross-cutting concerns, which we'll cover in [Part 3](../part-3-crosscutting-and-tradeoffs/article.md).  This pattern is relatively popular among C# developers, the [MediatR](https://github.com/jbogard/MediatR) package being the original and most popular implementation of it.  In this series, we'll look at how this could be applied to Rails applications using the [Mediate](https://github.com/rferg/mediate) gem.
+The subject of this series is a pattern for organizing certain areas of an application.  It aims to reduce unnecessary coupling between components and encourage the use of single-responsibility classes, making them easier to change and test.  It also has the benefit of providing easy points of extension for implementing cross-cutting concerns, which we'll cover in [Part 3](../part-3-crosscutting-and-tradeoffs/article.md).  This pattern is relatively popular among C# developers, the [MediatR](https://github.com/jbogard/MediatR) package being the original and most popular implementation of it.  In this series, we'll look at how this could be applied to Rails applications using the [Mediate](https://github.com/rferg/mediate) gem.
 
 ### Caveats
 
@@ -97,8 +97,26 @@ Note that the above code knows nothing about `MyRequestHandler` or how it's impl
 
 ## Thin, Decoupled Controllers
 
+### Problems with Thick Controllers
+
+In a typical, Model-View-Controller Rails application, controllers end up being responsible for many things.  Not only do they parse and validate parameters from HTTP requests and return responses, they are also often responsible for a lot of what happens in the middle.  In relatively complex applications, this can include calling multiple methods on one or more models and often involves one or more control flow branches (i.e., if statements).
+
+This is code that you probably want to unit test.  Because there are multiple control flow branches, there are probably quite a few test cases that you will want to run through to make sure every branch is exercised.  Properly isolated unit tests are generally faster than integration tests; if we are going to run a lot of tests, we would prefer them to be faster.  Also, unit tests are more precise.  Since they run smaller units of application code, when a test fails it is easier to identify the cause of the failure.  This becomes more useful as the complexity of your code increases and sources of bugs become more difficult to identify.
+
+However, if this complex "code in the middle" is in a controller action, unit testing it in Rails is effectively impossible; you have to write some sort of integration test: a controller or request test.  This means exercising the object under test through a comparatively cumbersome interface of URLs, params, and hashes.  Despite the Rails helper methods, calling methods on plain Ruby objects would be more straightforward.  Moreover, controllers provide limited options for handling dependencies that we may want to mock or stub in our tests.  We cannot pass a stub through a constructor or method argument like we could with a plain Ruby class.  In practice, we end up using a gem, like rspec-mocks, to intercept calls to the specific classes and methods used in the controller, which leaks implementation details to our tests.
+
+TODO
+
+### Using Request Handlers
+
 TODO
 
 ### An Example: Creating a Post
 
 TODO
+
+### Alternatives
+
+TODO
+
+## Conclusion
