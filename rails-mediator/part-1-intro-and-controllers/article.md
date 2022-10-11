@@ -1,6 +1,6 @@
 # Rails on Mediator Part 1: Mediator and Thin Controllers
 
-Are you having trouble managing the complexity of your Ruby on Rails application?  Are your models tangled together and difficult to change?  Do your controllers contain a lot of complex logic making them difficult to understand and test?  In this 3-part series, I'll suggest some ways that using a mediator to organize parts of your application could help manage this complexity.  Read on to learn how to make your controllers thinner and decouple them from the rest of your application, how to [use domain events to decouple your models](../part-2-domain-events/article.md), and how to [implement cross-cutting concerns without adding more code to your controllers](../part-3-crosscutting-and-tradeoffs/article.md).
+Are you having trouble managing the complexity of your Ruby on Rails application?  Are your models tangled together and difficult to change?  Do your controllers contain a lot of complex logic making them difficult to understand and test?  In this 3-part series, I'll suggest some ways that using a mediator to organize your application could help manage this complexity.  Read on to learn how to make your controllers thinner and decouple them from the rest of your application, how to [use domain events to decouple your models](../part-2-domain-events/article.md), and how to [implement cross-cutting concerns without adding more code to your controllers](../part-3-crosscutting-and-tradeoffs/article.md).
 
 ## The Pattern
 
@@ -14,7 +14,7 @@ There is [some controversy](https://jimmybogard.com/you-probably-dont-need-to-wo
 
 ### The Mediator Pattern
 
-The purpose of the Mediator Pattern is to improve a situation like the following.  You have a number of components that directly interact with each other.  These might be a group of classes that directly call methods on each other.  Consequently, each component directly depends on and is coupled to multiple other components.  It's difficult to understand how data flows through this system.  It's also difficult to change, reuse, or test any of these components.
+The purpose of the Mediator Pattern is to improve a situation like the following.  You have a number of components that directly interact with each other.  For example, these might be a group of classes that directly call methods on each other.  Consequently, each component directly depends on and is coupled to multiple other components.  It's difficult to understand how data flows through this system.  It's also difficult to change, reuse, or test any of these components.
 
 ![Coupled components with chaotic dependencies](images/mediator-pattern-problem.png)
 
@@ -37,7 +37,7 @@ class SampleMediator
       @b.do_another_thing(request.params)
     # etc...
     else
-      raise 'Invalid message'
+      raise 'Invalid request'
     end
   end
 end
@@ -97,15 +97,17 @@ Note that the above code knows nothing about `MyRequestHandler` or how it's impl
 
 ## Thin, Decoupled Controllers
 
+In this section, we'll look at how we can use the just described pattern to manage complexity in controllers.
+
 ### Problems with Thick Controllers
 
 In a typical, Model-View-Controller Rails application, controllers end up being responsible for many things.  Not only do they parse and validate parameters from HTTP requests and return responses, they are also often responsible for a lot of what happens in the middle.  In relatively complex applications, this can include calling multiple methods on one or more models and often involves one or more control flow branches (i.e., if statements).
 
-This is code that you probably want to unit test.  Because there are multiple control flow branches, there are probably quite a few test cases that you will want to run through to make sure every branch is exercised.  Properly isolated unit tests are generally faster than integration tests; if we are going to run a lot of tests, we would prefer them to be faster.  Also, unit tests are more precise.  Since they run smaller units of application code, when a test fails it is easier to identify the cause of the failure.  This becomes more useful as the complexity of your code increases and sources of bugs become more difficult to identify.
+This is code that you probably want to unit test.  Because there are multiple control flow branches, there are probably quite a few test cases that you will want to run through to make sure every branch is exercised.  Properly isolated unit tests are generally faster than integration tests; if we are going to run a lot of tests, we would prefer them to be faster.  Moreover, unit tests are more precise.  Since they run smaller units of code, when a test fails, it is easier to identify the cause of the failure.  This becomes more useful as the complexity of your code increases and sources of bugs become more difficult to identify.
 
 However, if this complex "code in the middle" is in a controller action, unit testing it in Rails is effectively impossible; you have to write some sort of integration test: a controller or request test.  This means exercising the object under test through a comparatively cumbersome interface of URLs, params, and hashes.  Despite the Rails helper methods, calling methods on plain Ruby objects would be more straightforward.  Moreover, controllers provide limited options for handling dependencies that we may want to mock or stub in our tests.  We cannot pass a stub through a constructor or method argument like we could with a plain Ruby class.  In practice, we end up using a gem, like rspec-mocks, to intercept calls to the specific classes and methods used in the controller, which leaks implementation details to our tests.
 
-TODO
+Another issue with controllers, especially as they accumulate more application logic, is that they lack cohesion.  They are classes that often have half a dozen public methods (`index`, `create`, `destroy`, etc.), none of which call each other.  They also often have private methods that only support one or two of these public methods each.  This makes some sense, since `destroy`, `create`, and `show` involve quite different operations.  But, having all of this in a single class, among other things, increases the cognitive overhead of maintaining and changing it.  If I want to change some aspect of the `create` action, I have to sift through all of the supporting methods for the other actions, which are unlikely to be related to what I'm trying to accomplish.
 
 ### Using Request Handlers
 
@@ -115,8 +117,10 @@ TODO
 
 TODO
 
-### Alternatives
+### Service Objects?
 
 TODO
 
 ## Conclusion
+
+TODO
