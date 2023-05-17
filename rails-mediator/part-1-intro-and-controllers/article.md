@@ -113,9 +113,11 @@ Another issue with controllers, especially as they accumulate more application l
 
 ### Using Request Handlers
 
-TODO
+Adding a mediator allows us to limit the responsibilities of controllers by moving any non-HTTP-related logic into request handlers.  A controller method, then, should only be responsible for turning parameters from the HTTP request into a `Mediate::Request` specific to that action (e.g., `PostsController#create` would use a `Posts::Create` request), `dispatch`ing that to the mediator, and turning the returned value into an HTTP response.
 
 ![With a mediator, controller dependencies are limited and the bulk of the logic should go in individual request handlers](./images/controllers-with-mediator.png)
+
+Now, all of that complex application logic is in plain Ruby objects (viz., request handlers) making them easier to unit test.  Moreover, since each controller action has its own request class and hence, its own request handler, the classes where this logic resides can be as cohesive as you like.
 
 ### An Example: Creating a Post
 
