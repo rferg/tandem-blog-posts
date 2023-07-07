@@ -1,14 +1,14 @@
 # Handling Side Effects in Rails with Domain Events
 
-- When an order is confirmed, notify the user.
+- When an order is confirmed, send an SMS to the user.
 - When a record is created, update the ElasticSearch index.
 - When a claim is submitted, update the policyholder's risk profile.
   
-In these examples, a change in an application's domain model triggers some reaction or side effect in another part of the application.  Although quite common and apparently innocuous, side effects[^1] like these can pose a software design challenge.  They often require interactions between disparate parts of an application.  If we naively couple these parts together, we might create an unruly graph of dependencies as our application grows in complexity, making it difficult to understand, test, and change.
+In these examples, a change in an application's domain model triggers some reaction or side effect in another part of the application.  Although quite common and apparently innocuous, side effects[^1] like these can pose a software design challenge.
 
-TODO: point about inverting dependency relationships (core domain depends on peripheral implementation details)
+Side effects often require interactions between disparate parts of an application.  If we naively couple these parts together, we might create a tangled graph of dependencies as our application grows in complexity, making it difficult to understand, test, and change.  Furthermore, we can end up with domain models (the core of our application) that depend directly on peripheral implementation details, like a particular SMS Service's API.
 
-For example, suppose we have a forum application.  It's quite complicated, so we've attempted to decompose it into a few logical subsystems or modules[^2]: one for the forum part itself, which handles user posts and comments, one for content moderation, and one for notifications. The idea here is to keep these i
+Suppose, for example, that we have a forum application.  It's quite complicated, so we've attempted to decompose it into a few logical subsystems or modules[^2]: one for the forum part itself, which handles user posts and comments, one for content moderation, and one for notifications. The idea here is to create boundaries with clear interfaces so that the internals of these modules can evolve and change independently.  Let's look at a particular case where a domain change triggers a side effect.
 
 When a user is banned, we want to do three things:
 
@@ -81,15 +81,11 @@ class BanUser
 end
 ```
 
-This avoids the direct coupling between `User` and `Modification::Case` and `Notification::Content`, but it has a few downsides.
+This avoids the direct coupling between `User` and `Modification::Case` and `Notification::Content`, but it still has a few issues.
 
-One of the nice things about the previous approach, where everything was in the model, is that the model change and the code to trigger its side effects are co-located.  `User#ban!` is the obvious method to call for banning a user and whenever it is called, the desired side effects are also triggered.  You would have to go out of your way to ignore that method and update `User#status` directly.  (And we could even make that impossible by defining private overrides of the stock ActiveRecord enum methods.)
+One of the nice things about the previous approach, where everything was in the model, is that the model change and the code to trigger its side effects are co-located.  `User#ban!` is the obvious method to call for banning a user and whenever it is called, the desired side effects are also triggered.  You would have to go out of your way to ignore that method and update `User#status` directly.  And we could even make that impossible by defining private overrides of the stock ActiveRecord enum methods.  However, with the Service Object, the model change and side effect trigger are one step removed.  Anywhere in the codebase where we want to ban a user, we would have to know that `User#ban!` does not perform the entire operation and that we must invoke the intermediate `BanUser` class to ensure that the side effects are triggered.  This is less obvious and easy to miss, especially if this codebase does not use Service Objects consistently for all operations.[^3]
 
-However, with the Service Object, the model change and side effect trigger are one step removed.  Anywhere in the codebase where we want to ban a user, we would have to know that `User#ban!` does not perform the entire operation and that we must invoke the intermediate `BanUser` class to ensure that the side effects are triggered.  This is less obvious and easy to miss, especially if this codebase does not use Service Objects consistently for all operations.[^3]
-
-Another downside of the Service Object approach is that it violates the [Open-Closed Principle](https://en.wikipedia.org/wiki/Open%E2%80%93closed_principle) with respect to side effects.  Suppose a few weeks after `BanUser` is released, it's decided that an additional notification to forum admins should be sent when a user is banned.  This would require modifying `BanUser#call`, code that has already been tested and has been running in production.  This risks introducing bugs into working code.  It would be preferable if we could add side effects without touching `BanUser` itself.
-
-TODO: STILL VIOLATES MODULARITY
+Another issue with the Service Object approach is that it violates the [Open-Closed Principle](https://en.wikipedia.org/wiki/Open%E2%80%93closed_principle) with respect to side effects.  Suppose that a few weeks after `BanUser` is released, we decide that an additional notification to forum admins should be sent when a user is banned.  This would require modifying `BanUser#call`.  This code has already been tested and has been running in production.  Modifying it risks introducing bugs into working code.  It would be preferable if we could add or remove side effects without touching the code that performs the main operation.  As we'll see, domain events would allow us to do that.
 
 ## Domain Events
 
@@ -159,6 +155,8 @@ end
 
 ## Implementing Domain Events in Rails
 
+I'm going describe one option for implementing the behavior just described.  It is around 150 lines of code and uses one gem, which Rails already uses, namely [Concurrent Ruby](https://github.com/ruby-concurrency/concurrent-ruby).  If you need other features, like persisting the events to a database, you may want to incorporate a gem like [Rails Event Store](https://railseventstore.org/).
+
 TODO
 
 Event
@@ -178,5 +176,6 @@ TODO
 [^2]: To avoid confusion: I don't merely mean Ruby modules here. TODO
 [^3]: We could remove the `User#ban!` method and have `BanUser` update the `User`'s status directly to potentially reduce the confusion.  Apply this strategy generally and we've removed any real behavior from our domain model.  In other words, we have an [Anemic Domain Model](https://martinfowler.com/bliki/AnemicDomainModel.html).
 
-https://lostechies.com/jimmybogard/2014/05/13/a-better-domain-events-pattern/
-https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
+- https://lostechies.com/jimmybogard/2014/05/13/a-better-domain-events-pattern/
+- https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
+- https://railseventstore.org/
