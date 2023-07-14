@@ -81,33 +81,21 @@ class BanUser
 end
 ```
 
-This avoids the direct coupling between `User` and `Modification::Case` and `Notification::Content`, but it still has a few issues.
+This avoids the direct coupling between `User` and `Modification::Case` and `Notification::Content`, but it still has a couple of issues.
 
-One of the nice things about the previous approach, where everything was in the model, is that the model change and the code to trigger its side effects are co-located.  `User#ban!` is the obvious method to call for banning a user and whenever it is called, the desired side effects are also triggered.  You would have to go out of your way to ignore that method and update `User#status` directly.  And we could even make that impossible by defining private overrides of the stock ActiveRecord enum methods.  However, with the Service Object, the model change and side effect trigger are one step removed.  Anywhere in the codebase where we want to ban a user, we would have to know that `User#ban!` does not perform the entire operation and that we must invoke the intermediate `BanUser` class to ensure that the side effects are triggered.  This is less obvious and easy to miss, especially if this codebase does not use Service Objects consistently for all operations.[^3]
+One of the nice things about the previous approach, where everything was in the model, is that the model change and the code to trigger its side effects are co-located.  `User#ban!` is the obvious method to call for banning a user.  Whenever it is called, the desired side effects are also triggered.  You would have to go out of your way to ignore that method and update `User#status` directly.  And we could even make that impossible by defining private overrides of the stock ActiveRecord enum methods.
 
-Another issue with the Service Object approach is that it violates the [Open-Closed Principle](https://en.wikipedia.org/wiki/Open%E2%80%93closed_principle) with respect to side effects.  Suppose that a few weeks after `BanUser` is released, we decide that an additional notification to forum admins should be sent when a user is banned.  This would require modifying `BanUser#call`.  This code has already been tested and has been running in production.  Modifying it risks introducing bugs into working code.  It would be preferable if we could add or remove side effects without touching the code that performs the main operation.  As we'll see, domain events would allow us to do that.
+However, with the Service Object, the model change and side effect trigger are one step removed.  Anywhere in the codebase where we want to ban a user, we would have to know that `User#ban!` does not perform the entire operation and that we must invoke the intermediate `BanUser` class to ensure that the side effects are triggered.  This is less obvious and easy to miss, especially if this codebase does not use Service Objects consistently for all operations.[^3]
+
+Another issue with the Service Object approach is that it violates the [Open-Closed Principle](https://en.wikipedia.org/wiki/Open%E2%80%93closed_principle) with respect to side effects.  Suppose that a few weeks after `BanUser` is released, we decide that an additional notification to forum admins should be sent when a user is banned.  This would require modifying `BanUser#call`.  This code has already been tested and is running in production.  Modifying it risks introducing bugs into working code.  It would be preferable if we could add or remove side effects without touching the code that performs the main operation.  As we'll see, domain events would allow us to do that.
 
 ## Domain Events
 
 TODO: describe domain events
 
-TODO: how does code look with domain events
+Let's look at how domain events would be incorporated into our user banning example.  Ignore the `Event::` base classes for now (e.g., `Event::ApplicationEvent`); I'll explain implementations in the [next section](#implementing-domain-events-in-rails).
 
-```ruby
-class User < ApplicationRecord
-  include Events::Emitter
-  # ...
-  enum :status, %i[inactive active banned]
-
-  def ban!(reason)
-    return true if banned?
-
-    add_event(Events::UserBanned.new(id, reason))
-    banned!
-    true
-  end
-end
-```
+We have our domain event class, `UserBanned`, that holds the attributes necessary to describe the particular event instance.
 
 ```ruby
 module Events
@@ -123,7 +111,32 @@ module Events
 end
 ```
 
-TODO: describe deferred approach
+Back in our `User#ban!` method, we've replaced any side effect code with a call to `add_event`, passing in a `UserBanned` instance.  `add_event` comes from the `Event::Emitter` concern that we've now included.  It stores the events in an array on this model instance.
+
+```ruby
+class User < ApplicationRecord
+  include Event::Emitter
+  # ...
+  enum :status, %i[inactive active banned]
+
+  def ban!(reason)
+    return true if banned?
+
+    add_event(Events::UserBanned.new(id, reason))
+    banned!
+    true
+  end
+end
+```
+
+Notice that we added the event prior to calling `banned!`, which will save the model and then commit the current transaction.  `Event::Emitter` registers `after_save` and `after_commit` ActiveRecord callbacks that will publish the events stored on a model instance to the appropriate handlers.  Whether a handler receives an event before or after the transaction committed depends on how it is configured, as we'll see below.
+
+This pattern of adding events to a model and then dispatching them later on ORM lifecycle hooks is called 'the deferred approach' (see [Jimmy Bogard's blog post](https://lostechies.com/jimmybogard/2014/05/13/a-better-domain-events-pattern/); cf. [here](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation#the-deferred-approach-to-raise-and-dispatch-events))  This is in contrast to an immediate approach in which events are raised and dispatched immediately in a single method call.
+
+The benefits of the deferred approach are:
+
+TODO
+
 
 ```ruby
 # app/models/moderation/events/create_case_on_user_banned.rb
@@ -173,9 +186,8 @@ Model --(Event)--> Publisher <--(Handlers)-- Registry
 TODO
 
 [^1]: TODO: FOOTNOTE DISTINGUISHING FROM FUNCTIONAL 'SIDE EFFECT'
-[^2]: To avoid confusion: I don't merely mean Ruby modules here. TODO
+[^2]: To avoid confusion: I don't mean Ruby modules here. I mean self-contained logical units with well-defined boundaries.
 [^3]: We could remove the `User#ban!` method and have `BanUser` update the `User`'s status directly to potentially reduce the confusion.  Apply this strategy generally and we've removed any real behavior from our domain model.  In other words, we have an [Anemic Domain Model](https://martinfowler.com/bliki/AnemicDomainModel.html).
 
 - https://lostechies.com/jimmybogard/2014/05/13/a-better-domain-events-pattern/
 - https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
-- https://railseventstore.org/
