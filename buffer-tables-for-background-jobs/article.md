@@ -103,7 +103,7 @@ Also, we could end up with multiple Claim Jobs running concurrently, unless we t
 
 To fix the potential concurrency issues with these queries, we can add the `FOR UPDATE SKIP LOCKED` phrase on our query for unclaimed events.  `FOR UPDATE` acquires a row-level lock on the batch of unclaimed records, which prevents another transaction (e.g., in a concurrent Claim Job) from modifying that row until the current transaction ends.  `SKIP LOCKED` says what to do if this query encounters a row that already has a lock on it.  Namely, it skips it, behaving like the row doesn't exist for this query.  This is fine for our purposes, since we only care that the record is being claimed by some single Claim Job.
 
-Here's what our `ContactActivityEvent` and `ClaimContactActivityEventsJob` might look like with this modification:
+Here's what our `ContactActivityEvent` might look like with this modification:
 
 ```ruby
 class ContactActivityEvent < ApplicationRecord
