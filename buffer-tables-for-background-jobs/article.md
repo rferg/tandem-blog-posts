@@ -29,7 +29,7 @@ But what happens when we scale up our sales operation and start recording, say, 
 
 Fortunately, the marketing service's API includes endpoints for bulk operations.  Instead of sending a single update per request, we can send, say, 1,000 per request.  This would cut down our job and request volume by a few orders of magnitude and make it easier to avoid the above issues.
 
-We don't, however, want to restructure all of our code and APIs for recording contact activities to accommodate this background process.  Ideally, we would keep our existing single-record operations for recording contact activities, but take advantage of bulk operations for syncing these with the marketing service.  In other words, we want to keep the main operation decoupled from handling its side effect, since they have different reasons to change.
+We don't, however, want to restructure all of our code and APIs for recording contact activities to accommodate this background process.  Ideally, we would keep our existing single-record operations for recording contact activities, but take advantage of bulk operations for syncing these with the marketing service.  In other words,  with respect to the number of records we process at a time, we want to keep the main operation decoupled from handling its side effect.  These have different reasons to change--the requirements of the users of our application for the former and constraints imposed by an external service for the latter.
 
 In this article, I'll describe one strategy for doing this.  We are going to keep it [boring](https://boringtechnology.club/) and use technologies that you are probably already using.  In particular, we'll assume we're using Postgres and Sidekiq as our job processor (using Redis).  But you could probably apply the same strategy using your preferred RDBMS and background job runner of choice.
 
@@ -79,15 +79,15 @@ What does an implementation look like that follows these performance heuristics?
 
 The schema for the buffer table will be simple.  We will have the typical boilerplate (primary key, timestamp columns) and whatever application-specific columns we need.  In the present case, this would be a foreign key to `contact_activities`.  We will probably want an index on this column, since we will join this table upon selecting the `contact_activity_events` so that we have the requisite information to send to the marketing service.
 
-The only batch processing specific column will be a nullable `uuid` column called `group_id`, which identifies the batch a record is a member of.  We will put a `BTREE` index on this column, since this will be our main query filter after events have been assigned to a group/batch.  To see how this schema facilitates following the performance heuristics above, let's look at the background jobs that will actually run the batch processing.
+The only batch processing specific column will be a nullable `uuid` column called `group_id`, which identifies the batch a record is a member of.  We will put a `BTREE` index on this column, since this will be our main query filter after events have been assigned to a group/batch.  This `group_id` will allow us to efficiently query and delete records by batch.
 
 ### Jobs
 
-There will be two main phases.  In the first phase, events will be grouped or "claimed" by a job.  Claiming events consists of assigning them a `group_id` and enqueuing a job, call it `EventsJob`, to carry out the actual target operation(s) for the events in that group.  The `EventsJob` performs the second phase.  It takes a `group_id` as an argument and selects the events with that `group_id`, probably `JOIN`ing.  Then, it performs the target operation and deletes the events with the given `group_id`.  (That is, if the operation is successful.  We'll address failures and retries [later](#failures-and-retries).)
+For our background jobs, there will be two main phases.  In the first phase, events will be grouped or "claimed" by a job.  Claiming events consists of assigning them a `group_id` and enqueuing a job, call it `EventsJob`, to carry out the actual target operation(s) for the events in that group.  The `EventsJob` performs the second phase.  It takes a `group_id` as an argument and selects the events with that `group_id`, probably `JOIN`ing other tables.  Then, it performs the target operation and deletes the events with the given `group_id`.  (That is, if the operation is successful.  We'll address failures and retries [later](#failures-and-retries).)
 
-A simple implementation would have a scheduled `ClaimJob` that runs every few minutes and does the following
+A simple implementation would have a scheduled `ClaimJob` that runs every few minutes or so and does the following
 
-  1. Select `batch_size` number of IDs of unclaimed events (i.e., where `group_id` is `NULL`).
+  1. Select `batch_size` number of IDs of unclaimed events (i.e., where `group_id` is `NULL`).  If there are none, exit.  Otherwise:
   2. Generate a `group_id` using `SecureRandom.uuid`.
   3. Issue a bulk update setting that `group_id` for those records.
   4. Enqueue an `EventsJob` with `group_id` as an argument.
@@ -97,7 +97,7 @@ A simple implementation would have a scheduled `ClaimJob` that runs every few mi
 
 The main benefit of this approach is that it is straightforward.  It will probably work fine in cases where we have a consistent volume of events and where maximizing throughput is not a priority.  However, there are some tradeoffs.
 
-The `ClaimJob` is not designed for concurrency.  This puts a potentially significant limit on how quickly we can claim events and enqueue `EventsJobs`, since we query for unclaimed events one at a time.  If we get a big spike in events such that these are being inserted at a faster rate than we are claiming them and we are limiting how many queries run per `ClaimJob`, the jobs will end before all events are claimed.  The claiming process can fall behind, growing the size of the events table and possibly slowing down queries.  It might take a while for these to catch up and claim all of the events after the spike subsides, delaying the target operation.
+The `ClaimJob` is not designed for concurrency.  This puts a potentially significant limit on how quickly we can claim events and enqueue `EventsJobs`, since we query for unclaimed events one at a time.  If we get a big spike in events such that these are being inserted at a faster rate than we are claiming them and we are limiting how many queries run per `ClaimJob`, the job will end before all events are claimed.  The claiming process can fall behind, growing the size of the events table and possibly slowing down queries.  It might take a while for these to catch up and claim all of the events after the spike subsides, delaying the target operation.
 
 Also, we could end up with multiple `ClaimJob`s running concurrently, unless we take measures[^1] to prevent this.  There could be an unrelated backup of jobs in the same queue.  `ClaimJob`s would be enqueued on schedule, but if the backup is long enough, they would get stuck in the queue such that multiple `ClaimJob`s are enqueued before any one runs.  Once the backup subsides, they could get picked up by different worker threads and run concurrently.  This presents a problem if the queries for unclaimed events do not include any concurrency controls, like row-level locking.  Two `ClaimJob`s running concurrently could end up "claiming" the same events and overwriting each other's `group_id`s.  This could have unexpected results, like an `EventJob` running with a `group_id` that no longer exists.
 
@@ -106,7 +106,6 @@ To fix the potential concurrency issues with these queries, we can add the `FOR 
 Here's what our `ContactActivityEvent` and `ClaimContactActivityEventsJob` might look like with this modification:
 
 ```ruby
-# app/models/contact_activity_event.rb
 class ContactActivityEvent < ApplicationRecord
   belongs_to :contact_activities
   
@@ -119,7 +118,7 @@ class ContactActivityEvent < ApplicationRecord
       ids = unclaimed.lock('FOR UPDATE SKIP LOCKED').limit(limit).pluck(:id)
       if ids.present?
         group_id = SecureRandom.uuid
-        where(id: ids).update_all(group_id:)
+        where(id: ids).update_all(group_id:) # <- Bulk assign events to group
         yield(group_id)
       end
       ids
@@ -127,39 +126,52 @@ class ContactActivityEvent < ApplicationRecord
   end
 end
 
-# app/jobs/claim_contact_activity_events_job.rb
+# ClaimJob would then claim events like this:
+ContactActivityEvent.claim(Rails.configuration.batch_size) do |group_id|
+  ContactActivityEventsJob.perform_async(group_id)
+end
+```
+
+We can now safely run `ClaimJob`s concurrently in the off-chance this happens.  But this structure, while simple, is not ideal for maximizing throughput or handling large spikes in events.  It does not really take advantage of the concurrency now available to us.  If we need this for our use-case, we can do something like the following.
+
+Instead of having a scheduled job that assigns batches one at a time from the buffer table, we can have many jobs running concurrently, each responsible for assigning a single batch (if available).  In effect, we put each iteration of the loop into its own job.  Our `ClaimJob`, then, would simply run the lines above for claiming a single batch of events if they exist:
+
+```ruby
 class ClaimContactActivityEventsJob
   include Sidekiq::Job
 
   def perform
-    ContactActivityEvent.claim(Rails.configuration.buffer_batch_size) do |group_id|
+    ContactActivityEvent.claim(Rails.configuration.batch_size) do |group_id|
       ContactActivityEventsJob.perform_async(group_id)
     end
   end
 end
 ```
 
+These single batch `ClaimJob`s won't be scheduled.  Instead, they'll be enqueued by a new scheduled job, called a `DistributionJob`.  The point of this job is to estimate how many `ClaimJob`s should be enqueued to batch up the current unclaimed events and then enqueue them.  This estimate does not need to be very exact.  If we underestimate, we should have another scheduled `DistributionJob` running in a few minutes to pick up the remaining unclaimed events.  If we overestimate, some number of `ClaimJob`s will find no unclaimed events and complete without enqueuing an `EventsJob`.  Given that we have an index on `group_id` and we've kept the buffer table small, the `ClaimJob`'s query for unclaimed events should be inexpensive.  A simple estimate of the number of needed `ClaimJob`s is to divide the current count of unclaimed events by the batch size, rounded up.  This can obviously be adjusted as you learn more about how the volume of events behaves over time.
+
 ![A three job set up to increase throughput and limit job duration](images/three_jobs.png)
 
+Like in the simpler set up above, we probably want to put an upper bound on the number of `ClaimJob`s enqueued by a single `DistributionJob`.  In extreme, unanticipated spikes of events, we don't want to end up dumping thousands or more `ClaimJob`s into our queue.  Our `DistributionJob`, then, might look something like this:
+
 ```ruby
-# app/jobs/distribute_contact_activity_events_job.rb
 class DistributeContactActivityEventsJob
   include Sidekiq::Job
 
   def perform
-    batch_count = [(events_count / batch_size.to_f).ceil, max_batches].min
-    args = batch_count.times.map { [] }
+    available_batches_count = (unclaimed_events_count / batch_size.to_f).ceil
+    args = [available_batches_count, max_batches].min.times.map { [] }
     ClaimContactActivityEventsJob.perform_bulk(args)
   end
 
   private
 
-  def events_count
+  def unclaimed_events_count
     ContactActivityEvent.unclaimed.count
   end
 
   def batch_size
-    Rails.configuration.buffer_batch_size
+    Rails.configuration.batch_size
   end
 
   def max_batches
@@ -168,12 +180,39 @@ class DistributeContactActivityEventsJob
 end
 ```
 
+Note that we base the number of `ClaimJob`s to enqueue on the current unclaimed events count alone.  We do not consider the number of `ClaimJob`s currently enqueued and waiting to run.  In cases where the queue for `ClaimJob`s has a prolonged back up for some reason, we could end up enqueuing a bunch of unnecessary `ClaimJob`s, since the number of unclaimed events is not decreasing.  Again, the downside of this is that we have a bunch of unnecessary, but hopefully inexpensive queries running against our database.  This is not ideal, but potentially an acceptable tradeoff for keeping our `DistributionJob` simple, especially if such queue slowdowns are rare.[^2]
+
 ### Failures and retries
 
-One of the nice things
+TODO
+
+```ruby
+class ContactActivityEventsJob
+  include Sidekiq::Job
+  sidekiq_options retry: 2
+
+  sidekiq_retries_exhausted do |msg|
+    group_id = msg['args'].first
+    # Possibly do something here with these records to perform compensating actions.
+    ContactActivityEvent.where(group_id:).delete_all
+    Rails.logger.error("ContactActivityEvent group #{group_id} exhausted retries: #{msg['error_message']}")
+  end
+
+  def perform(group_id)
+    events = ContactActivityEvent.includes(:contact_activity).where(group_id:)
+    sync(events) # Send request(s) to marketing service API here. Raise on retryable failure.
+    ContactActivityEvent.where(group_id:).delete_all
+  end
+end
+```
 
 ### Code
+
+You can find a generic implementation of this pattern [here](https://github.com/rferg/buffer_tables_demo).
+
+## Conclusion
 
 TODO
 
 [^1]: Examples of these include using a [rate limiter for Sidekiq](https://github.com/sidekiq/sidekiq/wiki/Ent-Rate-Limiting#concurrent) or running these jobs in a queue with only one worker thread.
+[^2]: We could of course complicate things a bit by incorporating the current number enqueued `ClaimJob`s into our estimate, if this is really necessary.  We might be able to get this number from `Sidekiq.stats` or we might have to track it ourselves.  A quick and dirty way to do the latter would be to have a key in Redis for this count and issue `INCRBY` commands from the Distribution Job and `DECRBY` commands from the Claim Jobs.
