@@ -21,7 +21,7 @@ When feasible, it is a good idea to scope background jobs to small, single trans
 - They are easier to reason about.
 - All else equal, they will complete quicker.  Long-running jobs are problematic.  They can delay deployments or risk being interrupted, potentially leaving data in an inconsistent state.
 
-But what happens when we scale up our sales operation and start recording, say, 10s or 100s of thousands of contact activities per day?  We'll be enqueuing 100s of thousands of background jobs, each sending an API request to that marketing service and paying the fixed performance cost of at least one HTTP roundtrip each time.  Additionally, we'll probably start hitting rate limits for that service's API.  Job queues will back up; data sync latency will increase; marketers will complain.
+But what happens when we scale up our sales operation and start recording, say, 10s or 100s of thousands of contact activities per day?  We'll be enqueuing 100s of thousands of background jobs, each sending an API request to that marketing service and paying the fixed performance cost of at least one HTTP round-trip each time.  Additionally, we'll probably start hitting rate limits for that service's API.  Job queues will back up; data sync latency will increase; marketers will complain.
 
 Fortunately, the marketing service's API includes endpoints for bulk operations.  Instead of sending a single update per request, we can send, say, 1,000 per request.  This would cut down our job and HTTP request volume by a few orders of magnitude and make it easier to avoid the above issues.
 
@@ -64,7 +64,7 @@ We will be querying this table at least every few minutes or so.  Controlling th
 
 Also, after the initial event creation, we should avoid individual updates and deletes.  If our batch size is 1,000, we should update/delete a batch in a single database command instead of issuing 1,000 separate update/delete commands.  This will probably be faster since it requires fewer network round-trips and it reduces overall load on the database.
 
-Finally, if possible, we should take advantage of our background job processor and run many batch jobs concurrently.  We can process more events in less time, i.e., increase throughput.  This also reduces the likelihood of the buffer table growing to an unwieldy size during periods of high volume, since we are processing and deleting them at a faster rate.  (Although, note that we will still need to stay within the rate limiting confines of the marketing service API.)
+Finally, if possible, we should take advantage of our background job processor and run many batch jobs concurrently.  We can process more events in less time, i.e., increase throughput.  This also reduces the likelihood of the buffer table growing to an unwieldy size during periods of high volume, since we are processing and deleting them at a faster rate.
 
 ## Implementation
 
@@ -72,13 +72,13 @@ What does an implementation look like that follows these performance heuristics?
 
 ### Schema
 
-The schema for the buffer table will be simple.  We will have the typical boilerplate (primary key, timestamp columns) and whatever application-specific columns we need.  In the present case, this would be a foreign key to `contact_activities`.  We will probably want an index on this column, since we will join this table upon selecting the `contact_activity_events` so that we have the requisite information to send to the marketing service.
+The schema for the buffer table will be simple.  We will have the typical boilerplate (primary key, timestamp columns) and whatever application-specific columns we need.  In our example, this would be a foreign key to `contact_activities`.  We will probably want an index on this column, since we will join this table upon selecting the `contact_activity_events` so that we have the requisite information to send to the marketing service.
 
-The only batch processing specific column will be a nullable `uuid` column called `group_id`, which identifies the batch a record is a member of.  We will put an index on this column, since this will be our main query filter after events have been assigned to a group/batch.  This `group_id` will allow us to efficiently query and delete records by batch.
+The only batch processing specific column will be a nullable `uuid` column called `group_id`, which identifies the record's batch.  We will put an index on this column, since this will be our main query filter after events have been assigned to a group.  This `group_id` will allow us to efficiently query and delete records by batch.
 
 ### Jobs
 
-For our background jobs, there will be two main phases.  In the first phase, events will be grouped or "claimed" by a job.  Claiming events consists of assigning them a `group_id` and enqueuing a job, call it Events Job, to carry out the actual target operation(s) for the events in that group.  The Events Job performs the second phase.  It takes a `group_id` as an argument and selects the events with that `group_id`, probably joining other tables.  Then, it performs the target operation (e.g., sending the bulk API request) and deletes the events with the given `group_id`.  Or rather, it deletes the events if the operation is successful.  We'll address failures and retries [later](#failures-and-retries).
+For our background jobs, there will be two main phases.  In the first phase, events will be grouped or "claimed" by a job.  Claiming events consists of assigning them a `group_id` and enqueuing a job, call it the 'Events Job', to carry out the actual target operation for the events in that group.  The Events Job performs the second phase.  It takes a `group_id` as an argument and selects the events with that `group_id`, probably joining other tables.  Then, it performs the target operation (e.g., sending the bulk API request) and deletes the events with the given `group_id`.  (Or rather, it deletes the events if the operation is successful.  We'll address failures and retries [later](#failures-and-retries).)
 
 A simple implementation would have a scheduled Claim Job that runs every few minutes or so and does the following
 
@@ -92,7 +92,7 @@ A simple implementation would have a scheduled Claim Job that runs every few min
 
 The main benefit of this approach is that it is straightforward.  It will probably work fine in most cases, especially where we have a consistent volume of events and where maximizing throughput is not a priority.  However, there are some tradeoffs.
 
-It is not designed for concurrency.  This puts a potentially significant limit on how quickly we can claim events and enqueue Events Jobs, since we query for unclaimed events one at a time.  If we get a big spike in events such that these are being inserted at a faster rate than we are claiming them and we are limiting how many queries run per Claim Job, the job will end before all events are claimed.  The claiming process can fall behind, growing the size of the events table and possibly slowing down queries.  It might take a while for these to catch up and claim all of the events after the spike subsides, delaying the target operation.
+It is not designed for concurrency.  This puts a potentially significant limit on how quickly we can claim events and enqueue Events Jobs, since we query for unclaimed events one at a time.  If we get a big spike in events such that events are inserted at a faster rate than we are claiming them and we are limiting how many queries run per Claim Job, the job will end before all events are claimed.  The claiming process can fall behind, growing the size of the events table and possibly slowing down queries.  It might take a while for these to catch up and claim all of the events after the spike subsides, delaying the target operation.
 
 Even if the above is a non-issue for our use-case, we could end up with multiple Claim Jobs running concurrently, unless we take explicit measures[^2] to prevent this.  For example, there could be a backup of jobs in the same queue due to some unrelated issue with another job.  Claim Jobs would be enqueued on schedule, but if the backup is long enough, they would get stuck in the queue such that multiple Claim Jobs are enqueued before any one runs.  Once the backup subsides, they could get picked up by different worker threads and run concurrently.  This presents a problem if the queries for unclaimed events do not include any concurrency controls, like row-level locking.  Two Claim Jobs running concurrently could end up "claiming" the same events and overwriting each other's `group_id`s.  This could have unexpected results, like an Events Job running with a `group_id` that no longer exists.
 
@@ -114,7 +114,7 @@ class ContactActivityEvent < ApplicationRecord
     transaction do
       ids = unclaimed.lock('FOR UPDATE SKIP LOCKED').limit(limit).pluck(:id)
       group_id = SecureRandom.uuid
-      where(id: ids).update_all(group_id:) # Bulk assign events to group
+      where(id: ids).update_all(group_id:) if ids.present? # Bulk assign events to group
       ClaimResult.new(group_id, ids)
     end
   end
@@ -171,7 +171,7 @@ Note that we estimate the number of Claim Jobs to enqueue based on the current u
 
 A nice feature of Sidekiq (and other background job processors) is that it will handle [most aspects of job failures and retries for us](https://github.com/sidekiq/sidekiq/wiki/Error-Handling#automatic-job-retry).  We don't want to reimplement this ourselves with our buffer table.  And we don't have to.
 
-Let's consider the Events Job.  It is the only interesting case since it is associated with a group of events and actually carries out the target operation, which is likely to have at least some intermittent failures.  By giving a `group_id` as the job argument, Sidekiq will persist it as such and we can offload the failure and retry logic for that group to Sidekiq.  No other job is going to process these events, since the Claim Job only selects events without `group_id`s.  We only need to act at the terminal points of the job to "complete" the events, i.e., delete them from the buffer table.  Either an event was successfully processed (after some number of retries) or all of the job's retries were exhausted by repeated failures.  For the former, we delete the event at the end of the job's `#perform` method.  For the latter, we use Sidekiq's `sidekiq_retries_exhausted` callback and delete any remaining events from the group there, along with whatever error logging, etc. we need to perform.
+Let's consider the Events Job.  It is the only interesting case since it is associated with a specific group of events and actually carries out the target operation, which is likely to have at least some intermittent failures.  By giving a `group_id` as the job argument, Sidekiq will persist it as such and we can offload the failure and retry logic for that group to Sidekiq.  No other job is going to process these events, since the Claim Job only selects events without `group_id`s.  We only need to act at the terminal points of the job to "complete" the events, i.e., delete them from the buffer table.  Either an event was successfully processed (after some number of retries) or all of the job's retries were exhausted by repeated failures.  For the former, we delete the event at the end of the job's `#perform` method.  For the latter, we use Sidekiq's `sidekiq_retries_exhausted` callback and delete any remaining events from the group there, along with whatever error logging, etc. we need to perform.
 
 Here's an example:
 
@@ -200,7 +200,7 @@ If the operation is not all-or-none, we will instead delete only the events that
 
 ## Conclusion
 
-The scenario we considered is relevant in more cases than one would initially think.  Applications are increasingly integrating with more external systems, each carrying its own performance profile and constraints.  It's not uncommon that two or more of these are incompatible if we want optimal or even acceptable performance.  By using something like this buffer table strategy, we can decouple these integration points and tune each operation to fit its particular profile.  And we can do this with relatively few changes, using technologies that we're already familiar with.
+The scenario we considered is relevant in more cases than one would initially think.  Applications are increasingly integrating with more external systems, each carrying its own performance profile and constraints.  It's not uncommon that two or more of these are incompatible if we want acceptable performance at even moderate scale.  By using something like this buffer table strategy, we can decouple these integration points and tune each operation to fit its particular profile.  And we can do this with relatively few changes, using technologies that we're already familiar with.
 
 [^1]: Note that we're batching *records* for processing in one or more jobs.  We're not batching jobs themselves.  So, for example, Sidekiq Pro's [batching feature](https://github.com/sidekiq/sidekiq/wiki/Batches) will not help us.
 [^2]: Examples of these include using a [rate limiter for Sidekiq](https://github.com/sidekiq/sidekiq/wiki/Ent-Rate-Limiting#concurrent) or running these jobs in a queue with only one worker thread.
